@@ -1,4 +1,24 @@
 `timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: 
+// Engineer: 
+// 
+// Create Date: 10.11.2026 22:31:52
+// Design Name: 
+// Module Name: singl_ele
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//////////////////////////////////////////////////////////////////////////////////
+`timescale 1ns / 1ps
 
 module single_elevator #(
     parameter N = 50,
@@ -16,7 +36,8 @@ module single_elevator #(
     output [N:0] disp_floor,
     output reg [1:0] disp_dir,
     output reg service_dir,
-    output idle_flag
+    output idle_flag,
+    output reg just_wait
 );
 
     reg [3:0] TF_sel;
@@ -47,7 +68,9 @@ module single_elevator #(
                      WAIT_ED_UP    = 4'b1000,
                      WAIT_ICC_DOWN = 4'b1001,
                      WAIT_ICC_UP   = 4'b1010,
-                     FIRE_EVAC     = 4'b1011; // NEW: Non-stop Fire Evacuation State
+                     FIRE_EVAC     = 4'b1011,
+                     WAIT_INDEFINITE = 4'b1100; // NEW: Non-stop Fire Evacuation State
+                     
     assign idle_flag = (current_state == PARK) && 
                        (EU_reg == {(N+1){1'b0}}) && 
                        (ED_reg == {(N+1){1'b0}}) && 
@@ -68,6 +91,7 @@ module single_elevator #(
         .clock  (clock),
         .reset  (reset),
         .enable (wait_enable),
+        .just_wait (just_wait),
         .done   (wait_done)
     );
 
@@ -117,6 +141,7 @@ module single_elevator #(
             service_dir   <= 1'b0;
             current_state <= PARK;
             disp_dir      <= STATIONARY;
+            just_wait     <= 1'b0;
         end
         else begin
             // ------------------ REQUEST LATCHING & MODES ------------------
@@ -154,6 +179,7 @@ module single_elevator #(
                 else begin
                     // Arrived at Safe Floor: Stop and keep doors open
                     disp_dir <= STATIONARY;
+                    current_state <= WAIT_INDEFINITE;
                 end
             end
             else if (e_stop) begin
@@ -197,6 +223,7 @@ module single_elevator #(
                         end
                         else begin
                             disp_dir <= STATIONARY;
+                            current_state <= WAIT_INDEFINITE;
                         end
                     end
 
@@ -317,6 +344,16 @@ module single_elevator #(
                         disp_dir <= STATIONARY;
                         if (wait_done) current_state <= PARK;
                     end
+                    
+                    WAIT_INDEFINITE: begin
+                        disp_dir <= STATIONARY;
+                        just_wait <= 1'b1;
+                        if (!fire_alarm) begin
+                            current_state <= PARK;
+                            just_wait     <= 1'b0; // Turn off the infinite counter
+                        end
+                    end
+                       
 
                     WAIT_EU_UP: begin
                         disp_dir <= STATIONARY;

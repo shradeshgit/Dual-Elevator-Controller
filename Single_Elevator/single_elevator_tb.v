@@ -110,6 +110,23 @@ module tb_single_elevator;
                  $time, oh_to_int(disp_floor), dir_to_string(disp_dir), idle_flag);
     end
 
+    // --- NEW: Boarding / Waiting Monitor ---
+    always @(posedge uut.wait_enable) begin
+        $display("[%0t ns] ---> DOORS OPEN: Elevator arrived at Floor %0d. Waiting for passengers...", 
+                 $time, oh_to_int(disp_floor));
+    end
+
+    // NEW: Monitor for the indefinite emergency wait state
+    always @(posedge uut.just_wait) begin
+        $display("[%0t ns] ---> DOORS OPEN: EMERGENCY EVACUATION. Holding doors open indefinitely at Floor %0d.", 
+                 $time, oh_to_int(disp_floor));
+    end
+
+    always @(posedge uut.wait_done) begin
+        $display("[%0t ns] ---> DOORS CLOSED: Boarding complete at Floor %0d.", 
+                 $time, oh_to_int(disp_floor));
+    end
+
     // 4. Main Test Sequence
     initial begin
         // Initialize Signals
@@ -217,6 +234,65 @@ module tb_single_elevator;
         #(CLK_PERIOD * 5);
         
         $display("--> Test Case 5 Passed: Fire evacuation completed.");
+        #(CLK_PERIOD * 5);
+
+        // ====================================================================
+        // TEST CASE 6: Priority Inversion Attempt (E-Stop vs Fire Alarm)
+        // ====================================================================
+        $display("\n--- TEST CASE 6: Priority Inversion (Fire Alarm overrides E-Stop) ---");
+        press_icc(5);
+        #(CLK_PERIOD * 4); // Let elevator start moving UP
+        
+        e_stop = 1;
+        $display("[%0t ns] STIMULUS: Emergency Stop ACTIVATED!", $time);
+        #(CLK_PERIOD * 4);
+        
+        fire_alarm = 1; // Fire alarm occurs while E-stop is physically engaged
+        $display("[%0t ns] STIMULUS: FIRE ALARM DETECTED BY PMOD (While E-Stop is active)!", $time);
+        
+        wait (oh_to_int(disp_floor) == SAFE_FLOOR_INDEX); // Must still reach safe floor
+        #(CLK_PERIOD * 10);
+        
+        fire_alarm = 0;
+        e_stop = 0;
+        $display("[%0t ns] STIMULUS: Fire Alarm and Emergency Stop DEACTIVATED", $time);
+        $display("--> Test Case 6 Passed: Fire Alarm correctly overrode the E-Stop.");
+        #(CLK_PERIOD * 5);
+
+        // ====================================================================
+        // TEST CASE 7: Memory Flush During Evacuation
+        // ====================================================================
+        $display("\n--- TEST CASE 7: Mashing buttons during Fire Evacuation ---");
+        fire_alarm = 1;
+        $display("[%0t ns] STIMULUS: FIRE ALARM ACTIVATED", $time);
+        #(CLK_PERIOD * 2);
+        
+        // Spam buttons while evacuation is active
+        press_icc(3);
+        press_eu(4);
+        press_ed(2);
+        #(CLK_PERIOD * 5);
+        
+        fire_alarm = 0;
+        $display("[%0t ns] STIMULUS: FIRE ALARM DEACTIVATED", $time);
+        #(CLK_PERIOD * 10);
+        
+        if (idle_flag == 1 && oh_to_int(disp_floor) == SAFE_FLOOR_INDEX) begin
+            $display("--> Test Case 7 Passed: Elevator ignored all inputs and remained safely parked.");
+        end else begin
+            $display("--> Test Case 7 FAILED: Elevator attempted to service wiped requests.");
+        end
+        #(CLK_PERIOD * 5);
+
+        // ====================================================================
+        // TEST CASE 8: Zero-Distance Call (Current Floor)
+        // ====================================================================
+        $display("\n--- TEST CASE 8: Zero-Distance Call ---");
+        // Elevator is currently sitting Idle at Floor 0.
+        press_icc(SAFE_FLOOR_INDEX);
+        wait (uut.wait_enable == 1); // Should immediately trigger doors without moving
+        wait (idle_flag == 1);
+        $display("--> Test Case 8 Passed: Executed door sequence without changing floors.");
 
         // Finish Simulation
         $display("\n=======================================================");
