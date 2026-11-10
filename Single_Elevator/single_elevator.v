@@ -2,18 +2,21 @@
 
 module single_elevator #(
     parameter N = 50,
-    parameter WAIT_CYCLES = 5
+    parameter WAIT_CYCLES = 5,
+    parameter SAFE_FLOOR_INDEX = 0 // Parameterized safe floor index (0 to N)
 )(
     input clock,
     input reset,
     input e_stop,
+    input manual_mode,             // NEW: Manual Mode toggle
+    input fire_alarm,              // NEW: Fire Alarm trigger from PMOD
     input [N:0] EU_switch,
     input [N:0] ED_switch,
     input [N:0] ICC_switch,
     output [N:0] disp_floor,
     output reg [1:0] disp_dir,
-    output reg service_dir, // Fixed: Now an output port
-    output idle_flag        // New Output: HIGH when idle in PARK with no pending calls
+    output reg service_dir,
+    output idle_flag
 );
 
     reg [3:0] TF_sel;
@@ -22,11 +25,10 @@ module single_elevator #(
 
     assign disp_floor = CF;
 
-    // Idle Flag Logic: Asserted HIGH only in PARK state when all call registers are empty
-    assign idle_flag = (current_state == PARK) && 
-                       (EU_reg == {(N+1){1'b0}}) && 
-                       (ED_reg == {(N+1){1'b0}}) && 
-                       (ICC_reg == {(N+1){1'b0}});
+    // Convert safe floor integer index to one-hot vector
+    localparam [N:0] SAFE_FLOOR_OH = (1'b1 << SAFE_FLOOR_INDEX);
+
+    
 
     // Direction Encodings
     localparam [1:0] STATIONARY = 2'b00,
@@ -44,9 +46,13 @@ module single_elevator #(
                      WAIT_ED_DOWN  = 4'b0111,
                      WAIT_ED_UP    = 4'b1000,
                      WAIT_ICC_DOWN = 4'b1001,
-                     WAIT_ICC_UP   = 4'b1010;
-
-    // Wait Counter Control Signals
+                     WAIT_ICC_UP   = 4'b1010,
+                     FIRE_EVAC     = 4'b1011; // NEW: Non-stop Fire Evacuation State
+    assign idle_flag = (current_state == PARK) && 
+                       (EU_reg == {(N+1){1'b0}}) && 
+                       (ED_reg == {(N+1){1'b0}}) && 
+                       (ICC_reg == {(N+1){1'b0}}) &&
+                       !fire_alarm;
     wire wait_enable;
     wire wait_done;
 
@@ -65,14 +71,12 @@ module single_elevator #(
         .done   (wait_done)
     );
 
-    // Priority Helper: Isolates lowest set bit
     function [N:0] min_one_hot(input [N:0] req);
         begin
             min_one_hot = req & (~req + 1'b1);
         end
     endfunction
 
-    // Priority Helper: Isolates highest set bit
     function [N:0] max_one_hot(input [N:0] req);
         integer i;
         reg found;
@@ -88,7 +92,6 @@ module single_elevator #(
         end
     endfunction
 
-    // Combinational Target Floor (TF) Selector
     always @(*) begin
         case (TF_sel)
             EU_SERVICE:  TF = min_one_hot(EU_reg);
@@ -103,7 +106,7 @@ module single_elevator #(
         endcase
     end
 
-    // Sequential FSM & Timer Handshake
+    // Sequential FSM
     always @(posedge clock or posedge reset) begin
         if (reset) begin
             CF            <= {{N{1'b0}}, 1'b1};
@@ -116,11 +119,44 @@ module single_elevator #(
             disp_dir      <= STATIONARY;
         end
         else begin
-            EU_reg  <= EU_reg  | EU_switch;
-            ED_reg  <= ED_reg  | ED_switch;
-            ICC_reg <= ICC_reg | ICC_switch;
+            // ------------------ REQUEST LATCHING & MODES ------------------
+            if (fire_alarm) begin
+                // In Fire Mode: Clear all pending calls completely
+                EU_reg  <= {(N+1){1'b0}};
+                ED_reg  <= {(N+1){1'b0}};
+                ICC_reg <= {(N+1){1'b0}};
+            end
+            else if (manual_mode) begin
+                // In Manual Mode: Ignore and clear all external hall calls
+                EU_reg  <= {(N+1){1'b0}};
+                ED_reg  <= {(N+1){1'b0}};
+                ICC_reg <= ICC_reg | ICC_switch;
+            end
+            else begin
+                // Normal Mode: Latch all calls
+                EU_reg  <= EU_reg  | EU_switch;
+                ED_reg  <= ED_reg  | ED_switch;
+                ICC_reg <= ICC_reg | ICC_switch;
+            end
 
-            if (e_stop) begin
+            // ------------------ PRIORITY OVERRIDES ------------------
+            if (fire_alarm) begin
+                // FIRE ALARM (HIGHEST PRIORITY): Direct movement to SAFE_FLOOR
+                current_state <= FIRE_EVAC;
+                if (CF < SAFE_FLOOR_OH) begin
+                    CF       <= CF << 1;
+                    disp_dir <= UP;
+                end
+                else if (CF > SAFE_FLOOR_OH) begin
+                    CF       <= CF >> 1;
+                    disp_dir <= DOWN;
+                end
+                else begin
+                    // Arrived at Safe Floor: Stop and keep doors open
+                    disp_dir <= STATIONARY;
+                end
+            end
+            else if (e_stop) begin
                 disp_dir      <= STATIONARY;
                 current_state <= PARK;
             end
@@ -132,6 +168,7 @@ module single_elevator #(
                             current_state <= ICC_SERVICE;
                             TF_sel        <= ICC_SERVICE;
                         end
+                        // In manual mode, EU_reg and ED_reg remain 0, automatically ignoring these:
                         else if ((EU_reg | EU_switch) != 0) begin
                             current_state <= EU_SERVICE;
                             TF_sel        <= EU_SERVICE;
@@ -145,6 +182,25 @@ module single_elevator #(
                         end
                     end
 
+                    // ------------------ FIRE EVACUATION STATE ------------------
+                    FIRE_EVAC: begin
+                        if (!fire_alarm) begin
+                            current_state <= PARK;
+                        end
+                        else if (CF < SAFE_FLOOR_OH) begin
+                            CF       <= CF << 1;
+                            disp_dir <= UP;
+                        end
+                        else if (CF > SAFE_FLOOR_OH) begin
+                            CF       <= CF >> 1;
+                            disp_dir <= DOWN;
+                        end
+                        else begin
+                            disp_dir <= STATIONARY;
+                        end
+                    end
+
+                    // ------------------ NORMAL SERVICE STATES ------------------
                     EU_SERVICE: begin
                         if (TF == 0) begin
                             current_state <= PARK;
