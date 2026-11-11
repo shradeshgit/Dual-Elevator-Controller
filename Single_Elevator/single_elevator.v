@@ -29,7 +29,8 @@ module single_elevator #(
     input reset,
     input e_stop,
     input manual_mode,             // NEW: Manual Mode toggle
-    input fire_alarm,              // NEW: Fire Alarm trigger from PMOD
+    input fire_alarm,
+    input overload,              // NEW: Fire Alarm trigger from PMOD
     input [N:0] EU_switch,
     input [N:0] ED_switch,
     input [N:0] ICC_switch,
@@ -37,7 +38,8 @@ module single_elevator #(
     output reg [1:0] disp_dir,
     output reg service_dir,
     output idle_flag,
-    output reg just_wait
+    output reg just_wait,
+    output door_open
 );
 
     reg [3:0] TF_sel;
@@ -45,6 +47,7 @@ module single_elevator #(
     reg [3:0] current_state;
 
     assign disp_floor = CF;
+    
 
     // Convert safe floor integer index to one-hot vector
     localparam [N:0] SAFE_FLOOR_OH = (1'b1 << SAFE_FLOOR_INDEX);
@@ -92,9 +95,12 @@ module single_elevator #(
         .reset  (reset),
         .enable (wait_enable),
         .just_wait (just_wait),
+        .overload(overload),
         .done   (wait_done)
     );
-
+    
+ assign door_open = wait_enable || just_wait;
+ 
     function [N:0] min_one_hot(input [N:0] req);
         begin
             min_one_hot = req & (~req + 1'b1);
@@ -190,7 +196,10 @@ module single_elevator #(
                 case (current_state)
                     PARK: begin
                         disp_dir <= STATIONARY;
-                        if ((ICC_reg | ICC_switch) != 0) begin
+                        if (overload) begin
+        // Force doors open immediately so weight can be removed
+        current_state <= WAIT; end
+                        else if ((ICC_reg | ICC_switch) != 0) begin
                             current_state <= ICC_SERVICE;
                             TF_sel        <= ICC_SERVICE;
                         end

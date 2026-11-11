@@ -26,19 +26,18 @@ module wait_counter #(
     input  clock,
     input  reset,                      
     input  enable,
-    input just_wait,                    
+    input just_wait,
+    input overload,                    
     output done);
     
     reg [31:0] count;
-    assign done = enable && (count == WAIT_CYCLES - 1);
+    assign done = enable && (count == WAIT_CYCLES - 1) && !overload;
     
     always @(posedge clock or posedge reset) begin
         if (reset)
             count <= 0;                
-        else if (!enable && !just_wait)
-            count <= 0;
-        else if (just_wait)
-            count<=count+1;                
+        else if (!enable || just_wait || overload)
+            count <= 0;                
         else if (done)
             count <= 0;                
         else
